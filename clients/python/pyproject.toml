@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baalebos-ai"
+version = "1.0.0"
+description = "Official Python client and terminal CLI for the Baalebos AI Gateway"
+readme = "README.md"
+authors = [
+    { name = "Baalebos AI Team" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = [
+    "requests",
+    "httpx",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Source = "https://github.com/baalebos-cloud/nexus-ai-gateway"
+"Bug Tracker" = "https://github.com/baalebos-cloud/nexus-ai-gateway/issues"
+
+[project.scripts]
+ai = "baalebos_ai.cli:main"

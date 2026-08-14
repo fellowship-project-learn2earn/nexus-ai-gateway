@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: baalebos-ai
+Version: 1.0.0
+Summary: Official Python client and terminal CLI for the Baalebos AI Gateway
+Home-page: https://github.com/baalebos-cloud/nexus-ai-gateway
+Author: Baalebos AI Team
+License: MIT
+Project-URL: Source, https://github.com/baalebos-cloud/nexus-ai-gateway
+Project-URL: Bug Tracker, https://github.com/baalebos-cloud/nexus-ai-gateway/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: requests
+Requires-Dist: httpx
+Dynamic: author
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license
+Dynamic: project-url
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

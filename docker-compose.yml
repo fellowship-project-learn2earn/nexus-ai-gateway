@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PROTOCOL=https
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://${N8N_HOST}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Africa/Lagos}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+
+
+      # Gateway auth + provider keys, read via $env in the workflow
+      # (self-hosted Community Edition has no $vars UI, unlike n8n Cloud)
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY}
+      - HF_API_KEY=${HF_API_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - internal
+    # No "ports:" mapping needed -- cloudflared reaches n8n over the
+    # internal Docker network, never exposed to the host or internet
+    # directly. This is what lets this work despite blocked inbound ports.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - internal
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:
+
+networks:
+  internal:

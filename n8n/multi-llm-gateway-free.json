@@ -1,0 +1,158 @@
+{
+  "name": "Multi-LLM Free-Tier Gateway",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "baalebos-ai",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ffd2aae6-af5b-485c-a6dc-2ed44f40c49a",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1920,
+        320
+      ],
+      "webhookId": "baalebos-ai"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "auth-check",
+              "leftValue": "={{$json.headers['x-api-key']}}",
+              "rightValue": "={{$env.GATEWAY_API_KEY}}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c310f5c9-0469-41f4-934d-82c76546a54d",
+      "name": "Check API Key",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1696,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\", \"message\": \"missing or invalid x-api-key header\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "1ca96030-0230-49d2-ba3c-ee360ccd8220",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1472,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------------------------------------------------------------------------\n// Multi-LLM Free-Tier Gateway engine\n// Cascading fallback across free-tier providers -- if one is rate-limited or\n// erroring, the next one picks up the request automatically.\n// ---------------------------------------------------------------------------\n\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst message = body.message;\nconst mode = (body.mode || 'auto').toLowerCase();\nconst requestedModel = body.model;\nconst requestedModels = body.models;\n\nif (!message || typeof message !== 'string') {\n  return [{ json: { error: 'message (string) is required', statusCode: 400 } }];\n}\n\n// ---------------------------------------------------------------------------\n// Provider registry -- every entry here is a FREE tier, all hosted (no local\n// server required). Ordered = fallback priority for 'auto' and 'fallback'\n// modes.\n// ---------------------------------------------------------------------------\nconst PROVIDERS = [\n  {\n    id: 'groq-llama-3.3-70b',\n    provider: 'groq',\n    envKey: 'GROQ_API_KEY',\n    call: async (msg) => {\n      const key = $env.GROQ_API_KEY;\n      if (!key) throw new Error('GROQ_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.groq.com/openai/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'cerebras-llama3.1-8b',\n    provider: 'cerebras',\n    envKey: 'CEREBRAS_API_KEY',\n    call: async (msg) => {\n      const key = $env.CEREBRAS_API_KEY;\n      if (!key) throw new Error('CEREBRAS_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.cerebras.ai/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'llama3.1-8b', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'openrouter-llama3.3-70b-free',\n    provider: 'openrouter',\n    envKey: 'OPENROUTER_API_KEY',\n    call: async (msg) => {\n      const key = $env.OPENROUTER_API_KEY;\n      if (!key) throw new Error('OPENROUTER_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://openrouter.ai/api/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'meta-llama/llama-3.3-70b-instruct:free', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'gemini-1.5-flash',\n    provider: 'gemini',\n    envKey: 'GOOGLE_API_KEY',\n    call: async (msg) => {\n      const key = $env.GOOGLE_API_KEY;\n      if (!key) throw new Error('GOOGLE_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,\n        headers: { 'Content-Type': 'application/json' },\n        body: { contents: [{ parts: [{ text: msg }] }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.candidates[0].content.parts[0].text;\n    },\n  },\n  {\n    id: 'mistral-small',\n    provider: 'mistral',\n    envKey: 'MISTRAL_API_KEY',\n    call: async (msg) => {\n      const key = $env.MISTRAL_API_KEY;\n      if (!key) throw new Error('MISTRAL_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.mistral.ai/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'mistral-small-latest', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'cohere-command-r',\n    provider: 'cohere',\n    envKey: 'COHERE_API_KEY',\n    call: async (msg) => {\n      const key = $env.COHERE_API_KEY;\n      if (!key) throw new Error('COHERE_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.cohere.com/v1/chat',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'command-r', message: msg },\n        json: true,\n        timeout: 30000,\n      });\n      return res.text;\n    },\n  },\n  {\n    id: 'github-gpt-4o-mini',\n    provider: 'github-models',\n    envKey: 'GITHUB_TOKEN',\n    call: async (msg) => {\n      const key = $env.GITHUB_TOKEN;\n      if (!key) throw new Error('GITHUB_TOKEN not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://models.inference.ai.azure.com/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'sambanova-llama3.1-8b',\n    provider: 'sambanova',\n    envKey: 'SAMBANOVA_API_KEY',\n    call: async (msg) => {\n      const key = $env.SAMBANOVA_API_KEY;\n      if (!key) throw new Error('SAMBANOVA_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.sambanova.ai/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { model: 'Meta-Llama-3.1-8B-Instruct', messages: [{ role: 'user', content: msg }] },\n        json: true,\n        timeout: 30000,\n      });\n      return res.choices[0].message.content;\n    },\n  },\n  {\n    id: 'hf-mistral-7b',\n    provider: 'huggingface',\n    envKey: 'HF_API_KEY',\n    call: async (msg) => {\n      const key = $env.HF_API_KEY;\n      if (!key) throw new Error('HF_API_KEY not set');\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: { inputs: msg },\n        json: true,\n        timeout: 30000,\n      });\n      return Array.isArray(res) ? res[0].generated_text : res.generated_text;\n    },\n  },\n];\n\n// ---------------------------------------------------------------------------\n// Sensitivity classifier -- crude keyword check. Flags likely PII/sensitive\n// content in the response so the caller can decide how to handle it. No\n// local fallback exists on n8n Cloud, so this does not change routing.\n// ---------------------------------------------------------------------------\nfunction classify(msg) {\n  const flags = ['ssn', 'bvn', 'nin', 'password', 'passport', 'salary', 'medical', 'diagnosis', 'bank account', 'credit card'];\n  const lower = msg.toLowerCase();\n  return flags.some((f) => lower.includes(f)) ? 'sensitive' : 'general';\n}\n\nasync function runOne(entry, msg) {\n  try {\n    const text = await entry.call.call(this, msg);\n    return { model: entry.id, provider: entry.provider, tier: 'free', text, error: null };\n  } catch (err) {\n    return { model: entry.id, provider: entry.provider, tier: 'free', text: null, error: err.message || String(err) };\n  }\n}\n\nasync function cascade(msg, chain) {\n  const attempts = [];\n  for (const entry of chain) {\n    const result = await runOne.call(this, entry, msg);\n    attempts.push(result);\n    if (result.text) {\n      return { text: result.text, results: attempts, usedModel: entry.id };\n    }\n  }\n  return { text: null, results: attempts, usedModel: null };\n}\n\nlet output;\nconst classification = classify(message);\n\nif (mode === 'manual') {\n  const entry = PROVIDERS.find((p) => p.id === requestedModel);\n  if (entry) {\n    const result = await runOne.call(this, entry, message);\n    if (result.text) {\n      output = { source: 'manual', text: result.text, results: [result], mode, classification };\n    } else {\n      // requested model failed -- cascade through the rest as fallback\n      const rest = PROVIDERS.filter((p) => p.id !== entry.id);\n      const cascaded = await cascade.call(this, message, rest);\n      output = { source: 'manual-fallback', text: cascaded.text, results: [result, ...cascaded.results], mode, classification };\n    }\n  } else {\n    // unknown model id -- fall through the standard chain\n    const cascaded = await cascade.call(this, message, PROVIDERS);\n    output = { source: 'manual-unknown-model', text: cascaded.text, results: cascaded.results, mode, classification };\n  }\n} else if (mode === 'fanout') {\n  const chain = requestedModels && requestedModels.length\n    ? PROVIDERS.filter((p) => requestedModels.includes(p.id))\n    : PROVIDERS;\n  const results = await Promise.all(chain.map((entry) => runOne.call(this, entry, message)));\n  output = { source: 'fanout', text: (results.find((r) => r.text) || {}).text || null, results, mode, classification };\n} else if (mode === 'fallback') {\n  const cascaded = await cascade.call(this, message, PROVIDERS);\n  output = { source: 'fallback', text: cascaded.text, results: cascaded.results, mode, classification };\n} else {\n  // 'auto' (default): n8n Cloud has no local/self-hosted fallback, so\n  // sensitive content still goes through the normal chain -- it's just\n  // flagged in the response so the caller knows to handle it carefully.\n  const cascaded = await cascade.call(this, message, PROVIDERS);\n  output = { source: 'auto', text: cascaded.text, results: cascaded.results, mode, classification };\n  if (classification === 'sensitive') {\n    output.warning = 'message flagged as sensitive but sent to hosted free-tier providers (no local fallback available on n8n Cloud)';\n  }\n}\n\nif (!output.text) {\n  return [{\n    json: { ...output, error: 'all providers in the chain failed or are unconfigured', statusCode: 502 },\n  }];\n}\n\nreturn [{ json: { ...output, output: output.text, statusCode: 200 } }];\n"
+      },
+      "id": "deaef2f3-0992-4460-bf96-73a936477ca7",
+      "name": "Gateway Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1472,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode || 200 }}"
+        }
+      },
+      "id": "0faab4ea-2d3d-42ac-8a02-6585b54c19fc",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1248,
+        224
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Check API Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check API Key": {
+      "main": [
+        [
+          {
+            "node": "Gateway Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway Engine": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "30a9f9b3-1d16-4b91-92ba-c895f9496906",
+  "meta": {
+    "instanceId": "834f37fa1f9108348804b363bbbf33a090ca76b7f757ce0bb8e9e5a3e956b497"
+  },
+  "nodeGroups": [],
+  "id": "zQTPmMAF5qAoJ6al",
+  "tags": []
+}

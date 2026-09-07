@@ -18,7 +18,7 @@ The client needs two values: the gateway URL and your API key. Set them as envir
 variables so you never have to hardcode secrets in code:
 
 ```bash
-export BAALEBOS_API_URL="https://<your-instance>.app.n8n.cloud/webhook/baalebos-ai"
+export BAALEBOS_API_URL="https://gateway.baalebo.xyz/webhook/baalebos-ai"
 export BAALEBOS_API_KEY="your-gateway-key"
 ```
 

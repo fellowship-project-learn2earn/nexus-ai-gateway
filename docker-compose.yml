@@ -14,9 +14,7 @@ services:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 
-
-      # Gateway auth + provider keys, read via $env in the workflow
-      # (self-hosted Community Edition has no $vars UI, unlike n8n Cloud)
+      # API Keys
       - GATEWAY_API_KEY=${GATEWAY_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
@@ -25,15 +23,11 @@ services:
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - COHERE_API_KEY=${COHERE_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY}
       - HF_API_KEY=${HF_API_KEY}
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
       - internal
-    # No "ports:" mapping needed -- cloudflared reaches n8n over the
-    # internal Docker network, never exposed to the host or internet
-    # directly. This is what lets this work despite blocked inbound ports.
 
   cloudflared:
     image: cloudflare/cloudflared:latest

@@ -11,7 +11,7 @@ services:
       - WEBHOOK_URL=https://${N8N_HOST}/
       - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Africa/Lagos}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=false
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 
       # API Keys
@@ -45,3 +45,6 @@ volumes:
 
 networks:
   internal:
+    external: true
+    name: shared-net
+

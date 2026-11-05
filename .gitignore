@@ -1,7 +1,25 @@
-venv/
-node_modules/
-dist/
-build/
-__pycache__/
-*.egg-info/
+# secrets: never commit
 .env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# node (tests/node)
+node_modules/
+package-lock.json
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store

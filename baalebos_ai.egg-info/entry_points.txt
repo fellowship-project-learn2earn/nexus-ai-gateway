@@ -1,2 +1,0 @@
-[console_scripts]
-ai = baalebos_ai.cli:main

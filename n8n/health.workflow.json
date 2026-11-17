@@ -1,0 +1,60 @@
+{
+  "name": "Baalebos AI Health",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "baalebos-ai-health",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8f90e1be-ba14-5edc-8aea-f5fb45301e93",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "9f8a4f90-d092-5223-86d2-37ad54484264"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"ok\", \"service\": \"baalebos-ai\" } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "7fe3a99c-6d3a-5354-93c8-aab4771a08e8",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 90
+  }
+}

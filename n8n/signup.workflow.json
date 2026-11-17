@@ -1,0 +1,206 @@
+{
+  "name": "Baalebos AI Signup",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "baalebos-ai-signup",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "284df89c-dad4-5af0-a3c7-21ae1fcdb5be",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        100
+      ],
+      "webhookId": "e730bb59-f76a-5a7d-87f6-7d54df52d347"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Works out the caller's IP for signup rate limiting.\n// Order: Cloudflare's header (if the domain is proxied) -> x-real-ip ->\n// last x-forwarded-for entry (the one appended by the trusted proxy) ->\n// a random value, so an unknown IP never lumps every caller into one bucket.\nconst h = $input.first().json.headers || {};\nconst first = (v) => (v || '').toString().split(',')[0].trim();\nconst last = (v) => (v || '').toString().split(',').pop().trim();\nconst ip = first(h['cf-connecting-ip']) || first(h['x-real-ip']) || last(h['x-forwarded-for'])\n  || ('unknown-' + Math.random().toString(36).slice(2));\nreturn [{ json: { ip } }];"
+      },
+      "id": "850ac725-85a3-559c-9d58-f73c5795ccfa",
+      "name": "Client IP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- $1 = client IP, $2 = max signups per IP per 24h, $3 = hash salt.\n-- Generates the key inside Postgres (no JS crypto module needed in n8n),\n-- and refuses to mint more than $2 keys per network per day.\n-- Always returns exactly one row; api_key is NULL when the limit is hit.\nWITH h AS (\n  SELECT encode(sha256(convert_to($1::text || $3::text, 'UTF8')), 'hex') AS ip\n),\nins AS (\n  INSERT INTO api_keys (api_key, signup_ip_hash)\n  SELECT replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''),\n         h.ip\n  FROM h\n  WHERE (SELECT COUNT(*) FROM api_keys\n         WHERE signup_ip_hash = h.ip\n           AND created_at > NOW() - INTERVAL '24 hours') < $2::int\n  RETURNING api_key\n)\nSELECT (SELECT api_key FROM ins) AS api_key;",
+        "options": {
+          "queryReplacement": "={{ [ $json.ip, $env.SIGNUPS_PER_IP_PER_DAY || '10', $env.IP_HASH_SALT || 'baalebos' ] }}"
+        }
+      },
+      "id": "b79db447-8175-5450-ab0a-4f554b21d0f3",
+      "name": "Create Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -260,
+        100
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.api_key }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f5258196-7dfc-5499-8772-aa790b7c1960",
+      "name": "Got Key?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"api_key\": $json.api_key } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "f0386cdd-455a-5dc9-bfc3-79f11b88a06b",
+      "name": "Respond Key",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"too_many_signups\", \"message\": \"too many keys requested from this network today; try again tomorrow, or set BAALEBOS_API_KEY if you already have one\" } }}",
+        "options": {
+          "responseCode": 429
+        }
+      },
+      "id": "ad47a3b1-fc3d-5e0f-89db-9047b3169179",
+      "name": "Respond Limited",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"service_unavailable\", \"message\": \"key service temporarily unavailable, please retry shortly\" } }}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "9b966bfe-ae8c-5f55-bb8b-62d765937a9e",
+      "name": "Respond 503",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -20,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Client IP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Client IP": {
+      "main": [
+        [
+          {
+            "node": "Create Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Key": {
+      "main": [
+        [
+          {
+            "node": "Got Key?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 503",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Got Key?": {
+      "main": [
+        [
+          {
+            "node": "Respond Key",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Limited",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 90
+  }
+}

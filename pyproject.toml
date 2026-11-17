@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baalebos-ai"
+dynamic = ["version"]
+description = "Official Python client and terminal CLI for the Baalebos AI Gateway: free multi-provider LLM access with automatic failover"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Baalebos AI Team" }]
+keywords = ["llm", "ai", "gateway", "cli", "sdk", "groq", "gemini", "mistral", "failover"]
+dependencies = ["requests>=2.28", "httpx>=0.24"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Environment :: Console",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff", "build", "twine", "vermin"]
+
+[project.scripts]
+ai = "baalebos_ai.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/baalebos-cloud/nexus-ai-gateway"
+Source = "https://github.com/baalebos-cloud/nexus-ai-gateway"
+"Bug Tracker" = "https://github.com/baalebos-cloud/nexus-ai-gateway/issues"
+Documentation = "https://github.com/baalebos-cloud/nexus-ai-gateway#readme"
+Changelog = "https://github.com/baalebos-cloud/nexus-ai-gateway/blob/main/CHANGELOG.md"
+
+[tool.setuptools.dynamic]
+version = { attr = "baalebos_ai.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["baalebos_ai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+# Other teams' / legacy code that lives in this repo: not linted here, not edited by this change.
+extend-exclude = ["clients", "baalebos-ai-package", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

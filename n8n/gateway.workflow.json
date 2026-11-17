@@ -1,0 +1,273 @@
+{
+  "name": "Baalebos AI Gateway",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "baalebos-ai",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3eab9bd6-1ea5-5985-a9db-17ab4022a74e",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        100
+      ],
+      "webhookId": "39cf1a59-d18c-557e-98dc-7ff5184de94c"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.headers['x-api-key'] }}",
+              "rightValue": "={{ $env.GATEWAY_API_KEY }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.headers['x-api-key'] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b9962e93-2773-5c81-8805-ab3dea817da4",
+      "name": "Is Master Key?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- $1 = presented x-api-key, $2 = global daily cap for non-team keys.\n-- One atomic statement: validates the key, enforces the per-key and\n-- global daily limits, and increments the counters. Always returns\n-- exactly one row: allowed (0/1) and known (does the key exist at all,\n-- used to tell 401 from 429).\nWITH usage AS (\n  SELECT COALESCE(SUM(daily_request_count), 0) AS used\n  FROM api_keys\n  WHERE last_request_date = CURRENT_DATE AND is_team = FALSE\n),\nbumped AS (\n  UPDATE api_keys k\n  SET daily_request_count = CASE WHEN k.last_request_date = CURRENT_DATE\n                                 THEN k.daily_request_count + 1 ELSE 1 END,\n      last_request_date   = CURRENT_DATE,\n      total_request_count = k.total_request_count + 1\n  FROM usage u\n  WHERE k.api_key = $1\n    AND (k.is_team OR u.used < $2)\n    AND (k.last_request_date < CURRENT_DATE OR k.daily_request_count < k.daily_limit)\n  RETURNING k.id\n)\nSELECT\n  (SELECT COUNT(*) FROM bumped)::int AS allowed,\n  EXISTS (SELECT 1 FROM api_keys WHERE api_key = $1) AS known;",
+        "options": {
+          "queryReplacement": "={{ [ $json.headers['x-api-key'] || '', $env.PUBLIC_DAILY_CAP || '5000' ] }}"
+        }
+      },
+      "id": "1e900090-dabf-5b14-8d6c-298d5a9b5aa0",
+      "name": "Check Key And Quota",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -420,
+        260
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "153b5b9c-41dc-5b2a-95a1-421530984d61",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -180,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs when a database-backed key was refused. The quota query returns one\n// row: allowed (0/1) and known (does the key exist at all).\n//   unknown key  -> 401\n//   known key    -> 429 (its own daily limit, or the global public cap)\nconst r = $input.first().json;\nconst known = r.known === true || r.known === 't' || r.known === 'true';\nreturn [{ json: known\n  ? { error: 'rate_limited', message: 'daily request limit reached; it resets at 00:00 UTC', statusCode: 429 }\n  : { error: 'unauthorized', message: 'missing or invalid x-api-key header', statusCode: 401 } }];"
+      },
+      "id": "1f5cb3cb-a0ca-5314-9232-07b9c3064774",
+      "name": "Build Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baalebos AI Gateway engine -- n8n Code node (\"Run Once for All Items\").\n// Reads the ORIGINAL request from the Webhook node, so it behaves the same\n// whichever branch (master key / database key) let the request through.\n\nconst MAX_MESSAGE_CHARS = 8000;\nconst PROVIDER_TIMEOUT_MS = 20000;\n// Overall budget for the whole cascade. Nine providers x 20s would outlast\n// the proxy in front of n8n and turn into an opaque 502 -- stop trying new\n// providers once this is spent and return a clean error instead.\nconst DEADLINE_MS = Number($env.GATEWAY_DEADLINE_MS) || 60000;\n\nconst request = $('Webhook').first().json;\nconst headers = request.headers || {};\nconst body = request.body || {};\nconst message = body.message;\nconst mode = String(body.mode || 'auto').toLowerCase();\nconst requestedModel = body.model;\nconst requestedModels = body.models;\n// Optional sampling temperature. Clamped to 0-1, the range every provider here accepts (Cohere rejects\n// more); anything that isn't a finite number is ignored and the provider's own default applies.\nconst temperature = typeof body.temperature === 'number' && Number.isFinite(body.temperature)\n  ? Math.min(Math.max(body.temperature, 0), 1)\n  : undefined;\n\n// Admin = holder of the master key. Admins can ask for raw provider errors\n// (debug: true); everyone else only ever sees ok/fail per provider.\nconst isAdmin = !!$env.GATEWAY_API_KEY && headers['x-api-key'] === $env.GATEWAY_API_KEY;\nconst wantDebug = isAdmin && body.debug === true;\n\nif (typeof message !== 'string' || !message.trim()) {\n  return [{ json: { error: 'bad_request', message: 'message (non-empty string) is required', statusCode: 400 } }];\n}\nif (message.length > MAX_MESSAGE_CHARS) {\n  return [{ json: { error: 'message_too_long', message: `message must be at most ${MAX_MESSAGE_CHARS} characters`, statusCode: 413 } }];\n}\n\n// ---------------------------------------------------------------------------\n// Provider registry, in fallback order. Every provider's model (and URL, for\n// OpenAI-style ones) can be overridden with <PREFIX>_MODEL / <PREFIX>_URL\n// environment variables, so a retired model is a config change, not a code\n// change. Providers with no key configured are skipped.\n// ---------------------------------------------------------------------------\nfunction openAiStyle(id, provider, keyEnv, prefix, defaultUrl, defaultModel) {\n  return {\n    id, provider,\n    call: async (ctx, msg) => {\n      const key = $env[keyEnv];\n      if (!key) throw new Error('not configured');\n      const res = await ctx.helpers.httpRequest({\n        method: 'POST',\n        url: $env[`${prefix}_URL`] || defaultUrl,\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: {\n          model: $env[`${prefix}_MODEL`] || defaultModel,\n          messages: [{ role: 'user', content: msg }],\n          ...(temperature !== undefined && { temperature }),\n        },\n        json: true,\n        timeout: PROVIDER_TIMEOUT_MS,\n      });\n      const text = res?.choices?.[0]?.message?.content;\n      if (!text) throw new Error('empty response');\n      return text;\n    },\n  };\n}\n\nconst PROVIDERS = [\n  openAiStyle('groq-llama-3.3-70b', 'groq', 'GROQ_API_KEY', 'GROQ',\n    'https://api.groq.com/openai/v1/chat/completions', 'llama-3.3-70b-versatile'),\n  openAiStyle('cerebras-llama3.1-8b', 'cerebras', 'CEREBRAS_API_KEY', 'CEREBRAS',\n    'https://api.cerebras.ai/v1/chat/completions', 'llama3.1-8b'),\n  openAiStyle('openrouter-llama3.3-70b-free', 'openrouter', 'OPENROUTER_API_KEY', 'OPENROUTER',\n    'https://openrouter.ai/api/v1/chat/completions', 'meta-llama/llama-3.3-70b-instruct:free'),\n  {\n    id: 'gemini-flash', provider: 'gemini',\n    call: async (ctx, msg) => {\n      const key = $env.GOOGLE_API_KEY;\n      if (!key) throw new Error('not configured');\n      const model = $env.GEMINI_MODEL || 'gemini-2.5-flash';\n      const res = await ctx.helpers.httpRequest({\n        method: 'POST',\n        url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,\n        headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },\n        body: {\n          contents: [{ parts: [{ text: msg }] }],\n          ...(temperature !== undefined && { generationConfig: { temperature } }),\n        },\n        json: true,\n        timeout: PROVIDER_TIMEOUT_MS,\n      });\n      const text = res?.candidates?.[0]?.content?.parts?.[0]?.text;\n      if (!text) throw new Error('empty response');\n      return text;\n    },\n  },\n  openAiStyle('mistral-small', 'mistral', 'MISTRAL_API_KEY', 'MISTRAL',\n    'https://api.mistral.ai/v1/chat/completions', 'mistral-small-latest'),\n  {\n    id: 'cohere-command', provider: 'cohere',\n    call: async (ctx, msg) => {\n      const key = $env.COHERE_API_KEY;\n      if (!key) throw new Error('not configured');\n      const res = await ctx.helpers.httpRequest({\n        method: 'POST',\n        url: $env.COHERE_URL || 'https://api.cohere.com/v2/chat',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: {\n          model: $env.COHERE_MODEL || 'command-r-08-2024',\n          messages: [{ role: 'user', content: msg }],\n          ...(temperature !== undefined && { temperature }),\n        },\n        json: true,\n        timeout: PROVIDER_TIMEOUT_MS,\n      });\n      const text = res?.message?.content?.[0]?.text || res?.text;\n      if (!text) throw new Error('empty response');\n      return text;\n    },\n  },\n  openAiStyle('github-gpt-4o-mini', 'github-models', 'GITHUB_TOKEN', 'GITHUB',\n    'https://models.inference.ai.azure.com/chat/completions', 'gpt-4o-mini'),\n  openAiStyle('sambanova-llama3.1-8b', 'sambanova', 'SAMBANOVA_API_KEY', 'SAMBANOVA',\n    'https://api.sambanova.ai/v1/chat/completions', 'Meta-Llama-3.1-8B-Instruct'),\n  {\n    id: 'hf-mistral-7b', provider: 'huggingface',\n    call: async (ctx, msg) => {\n      const key = $env.HF_API_KEY;\n      if (!key) throw new Error('not configured');\n      const res = await ctx.helpers.httpRequest({\n        method: 'POST',\n        url: $env.HF_URL || 'https://router.huggingface.co/v1/chat/completions',\n        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },\n        body: {\n          model: $env.HF_MODEL || 'Qwen/Qwen2.5-7B-Instruct',\n          messages: [{ role: 'user', content: msg }],\n          ...(temperature !== undefined && { temperature }),\n        },\n        json: true,\n        timeout: PROVIDER_TIMEOUT_MS,\n      });\n      const text = res?.choices?.[0]?.message?.content;\n      if (!text) throw new Error('empty response');\n      return text;\n    },\n  },\n];\n\nfunction classify(msg) {\n  const flags = ['ssn', 'bvn', 'nin', 'password', 'passport', 'salary', 'medical', 'diagnosis', 'bank account', 'credit card'];\n  const lower = msg.toLowerCase();\n  return flags.some((f) => lower.includes(f)) ? 'sensitive' : 'general';\n}\n\nasync function runOne(ctx, entry, msg) {\n  try {\n    const text = await entry.call(ctx, msg);\n    return { id: entry.id, provider: entry.provider, ok: true, text };\n  } catch (err) {\n    return { id: entry.id, provider: entry.provider, ok: false, error: (err && err.message) || String(err) };\n  }\n}\n\nasync function cascade(ctx, msg, chain) {\n  const started = Date.now();\n  const attempts = [];\n  for (const entry of chain) {\n    if (Date.now() - started > DEADLINE_MS) break;\n    const r = await runOne(ctx, entry, msg);\n    attempts.push(r);\n    if (r.ok) return { winner: r, attempts };\n  }\n  return { winner: null, attempts };\n}\n\n// What callers see per provider: never raw error text (it can leak\n// internals), except to admins who explicitly ask with debug:true.\nfunction publicSummary(attempts, { includeText = false } = {}) {\n  return attempts.map((a) => {\n    const s = { provider: a.provider, model: a.id, ok: a.ok };\n    if (includeText && a.ok) s.text = a.text;\n    if (wantDebug && !a.ok) s.error = a.error;\n    return s;\n  });\n}\n\nconst classification = classify(message);\nlet outcome;\n\nif (mode === 'manual') {\n  const selected = PROVIDERS.find((p) => p.id === requestedModel);\n  if (!selected) {\n    return [{ json: { error: 'unknown_model', message: `model '${requestedModel}' not found; valid ids: ${PROVIDERS.map((p) => p.id).join(', ')}`, statusCode: 400 } }];\n  }\n  outcome = await cascade(this, message, [selected]);\n} else if (mode === 'fanout') {\n  const chain = Array.isArray(requestedModels) && requestedModels.length\n    ? requestedModels.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean)\n    : PROVIDERS;\n  if (!chain.length) {\n    return [{ json: { error: 'unknown_model', message: 'none of the requested models were found', statusCode: 400 } }];\n  }\n  const attempts = await Promise.all(chain.map((entry) => runOne(this, entry, message)));\n  outcome = { winner: attempts.find((a) => a.ok) || null, attempts };\n  outcome.includeText = true;\n} else if (mode === 'fallback' && Array.isArray(requestedModels) && requestedModels.length) {\n  const chain = requestedModels.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);\n  if (!chain.length) {\n    return [{ json: { error: 'unknown_model', message: 'none of the requested models were found', statusCode: 400 } }];\n  }\n  outcome = await cascade(this, message, chain);\n} else {\n  outcome = await cascade(this, message, PROVIDERS); // 'auto' and anything unrecognised\n}\n\nconst ok = !!outcome.winner;\nconst result = {\n  success: ok,\n  text: ok ? outcome.winner.text : null,\n  output: ok ? outcome.winner.text : null,\n  usedModel: ok ? outcome.winner.id : null,\n  provider: ok ? outcome.winner.provider : null,\n  classification,\n  mode: ['auto', 'manual', 'fanout', 'fallback'].includes(mode) ? mode : 'auto',\n  routingSummary: publicSummary(outcome.attempts, { includeText: !!outcome.includeText }),\n  statusCode: ok ? 200 : 502,\n};\nif (!ok) {\n  result.error = 'all_providers_failed';\n  result.message = 'every provider failed or is unconfigured; try again shortly';\n}\nif (classification === 'sensitive') {\n  result.warning = 'message looks sensitive; it was sent to third-party free-tier providers';\n}\nreturn [{ json: result }];"
+      },
+      "id": "4cb9285e-878b-529c-9345-94812c2dabde",
+      "name": "Gateway Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode || 200 }}"
+        }
+      },
+      "id": "92898d1b-8138-5661-bf34-31349e7ad352",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        320,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"service_unavailable\", \"message\": \"key service temporarily unavailable, please retry shortly\" } }}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "3e28d80e-60ab-55a9-9b76-8fb0f5190f18",
+      "name": "Respond 503",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -180,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is Master Key?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Master Key?": {
+      "main": [
+        [
+          {
+            "node": "Gateway Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Key And Quota",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Key And Quota": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 503",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Gateway Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway Engine": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 90
+  }
+}
